@@ -59,7 +59,6 @@ class Z_Forcing(object):
     def __init__(self, input_dim, embedding_dim, rnn_dim, mlp_dim, z_dim, out_dim, output_type="gaussian",cond_ln=False, num_layers=1,z_force=True,embedding_dropout=0. ):
         self.input_dim = input_dim
 
-        print(input_dim)
 
         self.embedding_dim = embedding_dim
         self.rnn_dim = rnn_dim
@@ -161,46 +160,41 @@ class Z_Forcing(object):
 
 
             self.x_fwd = self._emb_mod(x_fwd)
-            n_steps = self.x_fwd.shape[0]
-            print(n_steps)
+            n_steps = self.x_fwd.shape[1]
+
             states = [(hidden[0][0], hidden[1][0])]
+
+            states_h = hidden[0]
+            states_c = hidden[1]
             klds, zs, log_pz, log_qz, aux_cs = [], [], [], [], []
+
 
 
             eps = tf.random.normal([n_steps])
 
             assert (z_step is None) or (n_steps == 1)
-            print("LEN STATES")
 
             for step in range(n_steps):
 
-                print(step)
 
-                states_step = states[step]
-                print("STATES STEP")
-                print(states_step)
+                h_step = states_h[:,step]
+                c_step =states_c[:,step]
 
-                x_step = self.x_fwd[step]
-                h_step, c_step = states_step[0], states_step[1]
+
+                x_step = self.x_fwd[:,step]
 
 
                 r_step = eps[step]
 
-                print("HSTEP")
-                print(h_step.shape)
 
                 pri_params = self._pri_mod(h_step)
                 pri_params = tf.clip_by_value(pri_params, -8., 8.)
                 pri_mu, pri_logvar = tf.split(pri_params, 2, axis=1)
 
                 if bwd_states is not None:
-                    print("BWDS STATATES SHAPE")
-                    print(bwd_states.shape)
 
-                    b_step = bwd_states[step]
+                    b_step = bwd_states[:,step]
 
-                    print("BSTEP SHAPE")
-                    print(b_step.shape)
 
                     inf_params = self._inf_mod(tf.concat((h_step, b_step), axis=1))
                     inf_params = tf.clip_by_value(inf_params, -8., 8.)
@@ -235,16 +229,12 @@ class Z_Forcing(object):
                 i_step = self._gen_mod(z_step)
 
                 if self.cond_ln:
-                    print("USE CONDLN")
-
                     i_step = tf.clip_by_value(i_step, -3, 3)
                     gain_hh, bias_hh = tf.split(i_step, 2, axis=1)
                     gain_hh = 1. + gain_hh
                     h_new, _,  c_new = self.fwd_mod(x_step, (h_step, c_step),gain_hh=gain_hh, bias_hh=bias_hh)
 
                 else:
-                    print("NO CONDLN")
-
 
                     c_step = tf.convert_to_tensor(c_step)
                     c_step=tf.dtypes.cast(c_step, tf.float32)
@@ -253,15 +243,20 @@ class Z_Forcing(object):
                     h_step=tf.dtypes.cast(h_step, tf.float32)
 
 
-                    print(h_step)
-                    print(c_step)
 
                     rnn_input=tf.concat((i_step, x_step), axis=1)
+
+
                     rnn_input=tf.reshape(rnn_input,[rnn_input.shape[0],1,rnn_input.shape[1]])
 
-                    print(rnn_input)
+
+
+                    #h_step=tf.reshape(h_step,[h_step.shape[0],1,h_step.shape[1]])
+                    #c_step=tf.reshape(c_step,[c_step.shape[0],1,c_step.shape[1]])
+
 
                     h_new, _, c_new = self.fwd_mod(rnn_input,initial_state=[h_step, c_step])
+
 
                 states.append((h_new, c_new))
                 klds.append(kld)
@@ -272,17 +267,36 @@ class Z_Forcing(object):
 
                 log_qz.append(log_prob_gaussian(z_step, inf_mu, inf_logvar))
 
-                print("DONE 1")
+
+
+            states=states[1:]
+
+
+
             klds = tf.stack(klds, 0)
             aux_cs = tf.stack(aux_cs, 0)
             log_pz = tf.stack(log_pz, 0)
             log_qz = tf.stack(log_qz, 0)
             zs = tf.stack(zs, 0)
 
-            outputs = [s[0] for s in states[1:]]
+            outputs = [s[0] for s in states]
             outputs = tf.stack(outputs, 0)
+            outputs = tf.reshape(outputs,[outputs.shape[1],outputs.shape[0],outputs.shape[2]])
+
+            klds = tf.reshape(klds,[klds.shape[1],klds.shape[0]])
+            aux_cs = tf.reshape(aux_cs,[aux_cs.shape[1],aux_cs.shape[0]])
+            log_pz = tf.reshape(log_pz,[log_pz.shape[1],log_pz.shape[0]])
+            log_qz = tf.reshape(log_qz,[log_qz.shape[1],log_qz.shape[0]])
+
+            zs = tf.reshape(zs,[zs.shape[1],zs.shape[0],zs.shape[2]])
+
+            #zs = tf.reshape(zs,[zs.shape[1],zs.shape[0]])
+
+
+
+
             outputs = self.fwd_out_mod(outputs)
-            return outputs, states[1:], klds, aux_cs, zs, log_pz, log_qz
+            return outputs, states, klds, aux_cs, zs, log_pz, log_qz
 
 
     def infer(self, x, hidden):
@@ -300,33 +314,43 @@ class Z_Forcing(object):
         idx = np.arange(np.size(y,1))[::-1].tolist()
 
 
+
         # invert the targets and revert back
-        x_bwd = tf_index_select(tf.convert_to_tensor(y),0, idx)
+        #x_bwd = tf_index_select(tf.convert_to_tensor(y), 0, idx)
+
+        x_bwd=tf.gather(
+            tf.convert_to_tensor(y), idx, axis=1
+        )
+
 
         x= tf.convert_to_tensor(x)
 
-        print("X")
-        print(x.shape)
 
-        x_bwd = tf.concat((x_bwd, x[:1]), axis=0)
+
+        x_bwd = tf.concat((x_bwd, x[:,:1]), axis=1)
+
+
         x_bwd = self._emb_mod(x_bwd)
 
-        print(x_bwd.shape)
+
 
         states = self.bwd_mod(x_bwd)
 
 
-        print("STATES")
-        print(states.shape)
+
 
         outputs = self.bwd_out_mod(states[:-1])
 
-        states = tf_index_select(states,0, idx)
+        #states = tf_index_select(states,0, idx)
 
-        print(states.shape)
+        states=tf.gather(
+            states, idx, axis=1
+        )
 
 
-        outputs = tf_index_select(outputs, 0, idx)
+        outputs =tf.gather(
+            outputs, idx, axis=1
+        )
 
 
         return states, outputs
@@ -343,7 +367,10 @@ class Z_Forcing(object):
         aux_nll = tf.reduce_sum(aux_nll * x_mask, axis=0)
 
         if self.out_type == 'gaussian':
+
             out_mu, out_logvar = tf.split(fwd_outputs, 2, axis=-1)
+
+
             fwd_nll = -log_prob_gaussian(y, out_mu, out_logvar)
             fwd_nll = tf.reduce_sum(fwd_nll * x_mask, axis=0)
             out_mu, out_logvar = tf.split(bwd_outputs, 2, axis=-1)
