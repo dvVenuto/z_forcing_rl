@@ -1,0 +1,4 @@
+timit_raw_batchsize64_seqlen40.npz
+__pycache__/
+srnn/data/nottingham_raw_batchsize16_seqlen100.npz
+.DS_Store
