@@ -4,7 +4,7 @@ import tensorflow as tf
 import numpy as np
 import math
 
-from RIMCell import RIMCell
+from RIMCell_dist import RIMCell
 
 def log_prob_gaussian(x, mu, log_vars, mean=False):
     lp = - 0.5 * math.log(2 * math.pi) \
@@ -105,7 +105,11 @@ class Z_Forcing_RIMs(object):
 
         self.bwd_out_mod = tf.keras.layers.Dense(units=out_dim)
 
-
+        self._rim_mod = tf.keras.Sequential([
+            tf.keras.Input(shape=(self.z_dim)),
+            tf.keras.layers.Dense(self.mlp_dim,activation='relu'),
+            tf.keras.layers.Dense(units= 6),
+        ])
 
         self._aux_mod = tf.keras.Sequential([
             tf.keras.Input(shape=(self.z_dim + self.rnn_dim * 6)),
@@ -228,7 +232,6 @@ class Z_Forcing_RIMs(object):
                         aux_step = tf.reduce_sum((b_step_ - tf.tanh(aux_mu)) ** 2.0, 1)
                     else:
 
-
                         aux_step = -log_prob_gaussian(b_step_, tf.tanh(aux_mu), aux_logvar, mean=False)
 
                 else:
@@ -241,6 +244,9 @@ class Z_Forcing_RIMs(object):
 
 
                 i_step = self._gen_mod(z_step)
+
+                RIM_dist = self._rim_mod(z_step)
+
 
 
                 if self.cond_ln:
@@ -257,9 +263,7 @@ class Z_Forcing_RIMs(object):
                     h_step = tf.convert_to_tensor(h_step)
                     h_step=tf.dtypes.cast(h_step, tf.float32)
 
-
                     rnn_input=tf.concat((i_step, x_step), axis=1)
-
 
 
                     c_step=tf.reshape(c_step,[c_step.shape[0],6,int(c_step.shape[1]/ 6)])
@@ -267,14 +271,17 @@ class Z_Forcing_RIMs(object):
 
 
                     rnn_input=tf.reshape(rnn_input,[rnn_input.shape[0],1,rnn_input.shape[1]])
-
+                    RIM_dist=tf.reshape(RIM_dist,[RIM_dist.shape[0],1,RIM_dist.shape[1]])
 
 
                     #h_step=tf.reshape(h_step,[h_step.shape[0],1,h_step.shape[1]])
-                    #c_step=tf.reshape(c_step,[c_step.shape[0],1,c_step.shape[1]])
+                    #c_step=tf.reshape(c_step,[c_step.shape[0],1,c_step.shape[1]])\
 
 
-                    h_new, hidden_s, c_new = self.fwd_mod(rnn_input,initial_state=[h_step, c_step])
+
+                    rnn_input = tf.concat([rnn_input, RIM_dist],axis=2)
+
+                    h_new, hidden_s, c_new = self.fwd_mod(rnn_input,[h_step, c_step])
 
                     c_new=tf.reshape(c_new,[c_new.shape[0],int(6 * c_new.shape[2])])
 
@@ -358,7 +365,6 @@ class Z_Forcing_RIMs(object):
 
 
         states = self.bwd_mod(x_bwd)
-
 
 
 
