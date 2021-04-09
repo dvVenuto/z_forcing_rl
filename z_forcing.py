@@ -339,7 +339,7 @@ class Z_Forcing(object):
 
 
 
-        outputs = self.bwd_out_mod(states[:-1])
+        outputs = self.bwd_out_mod(states[:,:-1])
 
         #states = tf_index_select(states,0, idx)
 
