@@ -333,13 +333,14 @@ class Z_Forcing(object):
         x_bwd = self._emb_mod(x_bwd)
 
 
-
         states = self.bwd_mod(x_bwd)
 
 
 
 
-        outputs = self.bwd_out_mod(states[:-1])
+
+        outputs = self.bwd_out_mod(states[:,:-1])
+
 
         #states = tf_index_select(states,0, idx)
 
@@ -351,6 +352,7 @@ class Z_Forcing(object):
         outputs =tf.gather(
             outputs, idx, axis=1
         )
+
 
 
         return states, outputs
@@ -368,12 +370,15 @@ class Z_Forcing(object):
 
         if self.out_type == 'gaussian':
 
+
             out_mu, out_logvar = tf.split(fwd_outputs, 2, axis=-1)
+
 
 
             fwd_nll = -log_prob_gaussian(y, out_mu, out_logvar)
             fwd_nll = tf.reduce_sum(fwd_nll * x_mask, axis=0)
             out_mu, out_logvar = tf.split(bwd_outputs, 2, axis=-1)
+
             bwd_nll = -log_prob_gaussian(x, out_mu, out_logvar)
             bwd_nll = tf.reduce_sum(bwd_nll * x_mask, axis=0)
 
