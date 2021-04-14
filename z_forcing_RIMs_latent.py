@@ -274,9 +274,6 @@ class Z_Forcing_RIMs(object):
                     RIM_dist=tf.reshape(RIM_dist,[RIM_dist.shape[0],1,RIM_dist.shape[1]])
 
 
-                    #h_step=tf.reshape(h_step,[h_step.shape[0],1,h_step.shape[1]])
-                    #c_step=tf.reshape(c_step,[c_step.shape[0],1,c_step.shape[1]])\
-
 
 
                     rnn_input = tf.concat([rnn_input, RIM_dist],axis=2)
@@ -423,5 +420,21 @@ class Z_Forcing_RIMs(object):
             return fwd_nll, bwd_nll, aux_nll, kld, log_pz, log_qz
 
         return tf.reduce_mean(fwd_nll), tf.reduce_mean(bwd_nll), tf.reduce_mean(aux_nll), tf.reduce_mean(kld)
+
+
+    def generate_onestep(self, x_fwd, x_mask, hidden):
+        nsteps, nbatch = x_fwd.size(0), x_fwd.size(1)
+        #bwd_states, bwd_outputs = self.bwd_pass(x_bwd, hidden)
+        fwd_outputs, fwd_states, klds, aux_nll, zs, log_pz, log_qz = self.fwd_pass(
+                    x_fwd, hidden)
+
+        #CHANGE TO TD
+        output_prob = F.softmax(fwd_outputs.squeeze(0))
+        sampled_output = torch.multinomial(output_prob, 1)
+        hidden = (fwd_states[0][0].unsqueeze(0), fwd_states[0][1].unsqueeze(0))
+        if self.return_loss:
+            return (sampled_output, hidden, aux_nll)
+        else:
+            return (sampled_output, hidden)
 
 
