@@ -37,10 +37,5 @@ AGENTS_PATH refers to your instllation of tf-agents 0.7.1 .
 
 7. Move RIMCellPlay.py to /AGENTS_PATH/networks
 
-9. Move actor_rnn_network.py to /AGENTS_PATH/agents/ddpg
 
-## To test
 
-cd /AGENTS_PATH/agents/ddpg/examples/v2
-
-python train_eval_rnn.py --root_dir=/path/to/your/dir
