@@ -98,7 +98,8 @@ PPOLossInfo = collections.namedtuple('PPOLossInfo', (
     'l2_regularization_loss',
     'entropy_regularization_loss',
     'kl_penalty_loss',
-    "kld_loss"
+    "kld_loss",
+    "aux_loss"
 ))
 
 
@@ -386,7 +387,9 @@ class PPOAgent(tf_agent.TFAgent):
             self._compute_value_and_advantage_in_train),
         input_tensor_spec = input_tensor_spec,
         mlp_dim=self.env_units,
-        z_dim=self.z_dim
+        z_dim=self.z_dim,
+        rnn_dim=self.rnn_dim,
+        env_units=self.env_units
     )
 
     collect_policy_foward = ppo_policy.PPOPolicy(
@@ -599,7 +602,12 @@ class PPOAgent(tf_agent.TFAgent):
     kld = self.gaussian_kld(pri_mu_frwd, pri_lv_frwd, pri_mu_collector, pri_lv_collector)
     kld = tf.reduce_mean(kld)
 
+    aux_step= self._collect_policy.get_aux_step()
+    aux_loss = tf.reduce_mean(aux_step)
+
+    print("KL and AUX")
     print(kld)
+    print(aux_loss)
 
 
 
@@ -648,7 +656,7 @@ class PPOAgent(tf_agent.TFAgent):
 
     total_loss = (
         policy_gradient_loss + value_estimation_loss + l2_regularization_loss +
-        entropy_regularization_loss + kl_penalty_loss + kld)
+        entropy_regularization_loss + kl_penalty_loss + 0.5* kld + 0.5* aux_loss)
 
     return tf_agent.LossInfo(
         total_loss,
@@ -658,7 +666,8 @@ class PPOAgent(tf_agent.TFAgent):
             l2_regularization_loss=l2_regularization_loss,
             entropy_regularization_loss=entropy_regularization_loss,
             kl_penalty_loss=kl_penalty_loss,
-            kld_loss = kld
+            kld_loss = kld,
+            aux_loss=aux_loss
         ))
 
   def compute_return_and_advantage(
@@ -994,6 +1003,7 @@ class PPOAgent(tf_agent.TFAgent):
     entropy_regularization_losses = []
     kl_penalty_losses = []
     kld_losses = []
+    aux_losses=[]
 
 
     #print("TRAIN WEIGHTS")
@@ -1015,7 +1025,8 @@ class PPOAgent(tf_agent.TFAgent):
                                           self._collect_policy._gen_mod_col.trainable_weights+
                                           self._emb_mod.trainable_weights +
                                           self.bwd_mod.trainable_weights +
-                                          self.bwd_out_mod.trainable_weights))
+                                          self.bwd_out_mod.trainable_weights+
+                                          self._collect_policy._aux_mod.trainable_weights))
     # Sort to ensure tensors on different processes end up in same order.
     variables_to_train = sorted(variables_to_train, key=lambda x: x.name)
 
@@ -1076,6 +1087,8 @@ class PPOAgent(tf_agent.TFAgent):
             loss_info.extra.entropy_regularization_loss)
         kl_penalty_losses.append(loss_info.extra.kl_penalty_loss)
         kld_losses.append(loss_info.extra.kld_loss)
+        aux_losses.append(loss_info.extra.aux_loss)
+
 
 
     # TODO(b/1613650790: Move this logic to PPOKLPenaltyAgent.
@@ -1111,6 +1124,8 @@ class PPOAgent(tf_agent.TFAgent):
           entropy_regularization_losses) / num_epochs
       total_kl_penalty_loss = tf.add_n(kl_penalty_losses) / num_epochs
       total_kld_losses = tf.add_n(kld_losses) / num_epochs
+      total_aux_losses = tf.add_n(aux_losses) / num_epochs
+
 
       tf.compat.v2.summary.scalar(
           name='policy_gradient_loss',
@@ -1136,12 +1151,16 @@ class PPOAgent(tf_agent.TFAgent):
           name='kld_loss',
           data=total_kld_losses,
           step=self.train_step_counter)
+      tf.compat.v2.summary.scalar(
+          name='aux_loss',
+          data=total_aux_losses,
+          step=self.train_step_counter)
 
       total_abs_loss = (
           tf.abs(total_policy_gradient_loss) +
           tf.abs(total_value_estimation_loss) +
           tf.abs(total_entropy_regularization_loss) +
-          tf.abs(total_l2_regularization_loss) + tf.abs(total_kl_penalty_loss) + tf.abs(total_kld_losses))
+          tf.abs(total_l2_regularization_loss) + tf.abs(total_kl_penalty_loss) + tf.abs(total_kld_losses) + tf.abs(total_aux_losses))
 
       tf.compat.v2.summary.scalar(
           name='total_abs_loss',

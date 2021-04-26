@@ -25,6 +25,8 @@ import numpy as np
 import gin
 import tensorflow as tf
 import tensorflow_probability as tfp
+import math
+
 
 from tf_agents.agents.ppo import ppo_utils
 from tf_agents.distributions import utils as distribution_utils
@@ -67,7 +69,9 @@ class PPOPolicy(actor_policy.ActorPolicy):
                  compute_value_and_advantage_in_train: bool = False,
                  input_tensor_spec=None,
                  mlp_dim = 17,
-                 z_dim=25):
+                 z_dim=25,
+                 rnn_dim=25,
+                 env_units=10):
         """Builds a PPO Policy given network Templates or functions.
 
         Args:
@@ -111,6 +115,8 @@ class PPOPolicy(actor_policy.ActorPolicy):
 
         self.mlp_dim = mlp_dim
         self.z_dim = z_dim
+        self.rnn_dim =rnn_dim
+        self.env_units = env_units
 
         actor_output_spec = actor_network.create_variables(
             time_step_spec.observation)
@@ -172,15 +178,20 @@ class PPOPolicy(actor_policy.ActorPolicy):
             policy_state_spec = ()
 
         self._pri_mod = tf.keras.Sequential([
-            tf.keras.layers.Dense(self.mlp_dim, activation='relu', input_shape=(self.mlp_dim,)),
+            tf.keras.layers.Dense(self.mlp_dim * 2, activation='relu', input_shape=(self.mlp_dim,)),
             tf.keras.layers.Dense(units=self.z_dim * 2),
         ])
 
         self._gen_mod = tf.keras.layers.Dense(self.mlp_dim, activation='relu')
 
         self._pri_mod_col = tf.keras.Sequential([
-            tf.keras.layers.Dense(self.mlp_dim, activation='relu', input_shape=(self.mlp_dim,)),
+            tf.keras.layers.Dense(self.mlp_dim *2, activation='relu', input_shape=(self.mlp_dim,)),
             tf.keras.layers.Dense(units=self.z_dim * 2),
+        ])
+
+        self._aux_mod = tf.keras.Sequential([
+            tf.keras.layers.Dense(self.mlp_dim *2, activation='relu', input_shape=(self.z_dim,)),
+            tf.keras.layers.Dense(units=2 * self.env_units ),
         ])
 
         self._gen_mod_col = tf.keras.layers.Dense(self.mlp_dim, activation='relu')
@@ -200,10 +211,13 @@ class PPOPolicy(actor_policy.ActorPolicy):
         self._value_network = value_network
 
         self.pri_mu = 0
+        self.aux_step = 0
         self.pri_log_var = 0
 
         self.pri_mu_col = 0
         self.pri_log_var_col = 0
+
+        self.z_step=0
 
     def reparametrize(self, mu, logvar, eps=None):
         std = tf.exp(tf.math.scalar_mul(0.5, logvar))
@@ -229,6 +243,9 @@ class PPOPolicy(actor_policy.ActorPolicy):
     def get_pri_mu(self):
         return self.pri_mu
 
+    def get_aux_step(self):
+        return self.aux_step
+
     def get_log_var(self):
         return self.pri_log_var
 
@@ -237,6 +254,9 @@ class PPOPolicy(actor_policy.ActorPolicy):
 
     def get_log_var_col(self):
         return self.pri_log_var_col
+
+    def get_z_step(self):
+        return self.z_step
 
     def log_prob_gaussian(self, x, mu, log_vars, mean=False):
         lp = - 0.5 * math.log(2 * math.pi) \
@@ -271,6 +291,30 @@ class PPOPolicy(actor_policy.ActorPolicy):
         """
         if self._observation_normalizer:
             observations = self._observation_normalizer.normalize(observations)
+
+        print(observations.shape)
+
+        z_step = self.z_step
+
+        outer_rank = nest_utils.get_outer_rank(
+            observations, self._input_tensor_spec)
+        batch_squash = utils.BatchSquash(outer_rank)
+
+        observation = tf.nest.map_structure(batch_squash.flatten, observations)
+        print(observation.shape)
+
+        z_step = tf.dtypes.cast(z_step, tf.float64)
+
+        observation_in = tf.concat((z_step, observation), axis=1)
+
+        observation_in = self._gen_mod(observation_in)
+        observation_in = tf.dtypes.cast(observation_in, tf.float64)
+
+        print(observation_in.shape)
+
+        observations = observation_in
+
+
         return self._value_network(observations, step_types, value_state,
                                    training=training)
 
@@ -307,6 +351,8 @@ class PPOPolicy(actor_policy.ActorPolicy):
             observation_in = self._gen_mod(observation_in)
             observation_in = tf.dtypes.cast(observation_in, tf.float64)
 
+            aux_step = 0
+
 
         if bwd_states is not None:
             outer_rank = nest_utils.get_outer_rank(
@@ -330,9 +376,19 @@ class PPOPolicy(actor_policy.ActorPolicy):
             observation_in = self._gen_mod_col(observation_in)
             observation_in = tf.dtypes.cast(observation_in, tf.float64)
 
+            aux_params = self._aux_mod(z_step)
+            aux_params = tf.clip_by_value(aux_params, -8., 8.)
+            aux_mu, aux_logvar = tf.split(aux_params, 2, axis=1)
+
+            b_states_ = tf.stop_gradient(bwd_states)
+
+
+            aux_step = -self.log_prob_gaussian(b_states_, aux_mu, aux_logvar)
+
+
         output = self._actor_network(observation_in, time_step.step_type, network_state=policy_state, training=training)
 
-        return output, pri_mu, pri_logvar
+        return output, pri_mu, pri_logvar, aux_step, z_step
 
     def _variables(self):
         var_list = self._actor_network.variables[:]
@@ -355,9 +411,13 @@ class PPOPolicy(actor_policy.ActorPolicy):
 
         new_policy_state = {'actor_network_state': (), 'value_network_state': ()}
 
-        (distributions, new_policy_state['actor_network_state']), pri_mu, pri_logvar = (
+        (distributions, new_policy_state['actor_network_state']), pri_mu, pri_logvar, aux_step, z_step = (
             self._apply_actor_network(
                 time_step, policy_state['actor_network_state'], training=training, bwd_states=bwd_states))
+
+
+        self.z_step = z_step
+
 
         if self._collect:
             policy_info = {
@@ -371,6 +431,9 @@ class PPOPolicy(actor_policy.ActorPolicy):
             if not self._compute_value_and_advantage_in_train:
                 # If value_prediction is not computed in agent.train it needs to be
                 # computed and saved here.
+
+                print(z_step)
+
                 (policy_info['value_prediction'],
                  new_policy_state['value_network_state']) = self.apply_value_network(
                     time_step.observation,
@@ -391,9 +454,10 @@ class PPOPolicy(actor_policy.ActorPolicy):
         if bwd_states is not None:
             self.pri_mu = pri_mu
             self.pri_log_var = pri_logvar
+            self.aux_step = aux_step
+
         else:
             self.pri_mu_col = pri_mu
             self.pri_log_var_col = pri_logvar
-
 
         return policy_step.PolicyStep(distributions, new_policy_state, policy_info)
